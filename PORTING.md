@@ -301,3 +301,31 @@ Steps (run by the user in Terminal):
 or hold Shift). Safe mode skips the auxiliary kernel collection, so the kext won't load. Then
 collect `/Library/Logs/DiagnosticReports/*.panic` and run the revert steps. Don't reboot again
 until the panic has been looked at.
+
+### Test 1 (2026-10-25 22:04): loads, engine fails on DMA allocation
+
+Installed as above, approved, rebooted. No panic.
+
+- `kextstat`: `com.audio-evolution.driver.Envy24 (0.22.0)` loaded; attached through the
+  `Envy24 Delta 66` personality (`IOPCISecondaryMatch 0xd6321412`).
+- Kernel log (`/usr/bin/log show --predicate 'sender == "Envy24PCIAudioDriver"'`; note that plain
+  `log` in zsh is a shell builtin):
+
+      M-Audio Delta 66 detected!
+      Envy24: EEPROM subvendor 121432d6, GPIO mask 02, state c0, dir fd
+      Envy24: Delta 66 initialized, GPIO dir fd mask 02 data e2
+      Failed to allocate memory within the first 256MB address space!
+      Envy24: couldn't allocate DMA output buffer below 256 MB
+      Something failed in the engine!
+
+**Board revision settled: classic Delta 66** (GPIO dir `0xfd`, not rev E's `0xfb`). The S/PDIF
+path, when it's added, is the CS8403. After init, GPIO data `0xe2` = both codec selects idle
+high (0x80|0x40), codec clock high (0x20), 0x02 high (an input), DFS clear. That's the state
+ALSA leaves.
+
+The engine didn't start: 160 KB of physically contiguous memory below 256 MB wasn't available.
+This is exactly the case where upstream would have fallen back to an unrestricted buffer and let
+the card DMA to a truncated address. No audio device appeared in Core Audio.
+
+Fix: try 4096, then 2048, then 1024 frames per buffer (playback 160/80/40 KB, capture
+192/96/48 KB), and log the size and physical addresses that were used.

@@ -57,6 +57,7 @@ private:
 
 	// Core Audio sees only the first playChannels/recChannels slots of each DMA frame.
 	// Its sample buffers are these shadows; clip/convert move data to and from the DMA buffers.
+	UInt32							numSampleFrames;
 	UInt32							playChannels;
 	UInt32							recChannels;
 	SInt32							*outputShadow;

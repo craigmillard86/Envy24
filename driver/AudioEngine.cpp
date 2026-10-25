@@ -120,8 +120,7 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
     
     setSampleRate(&initialSampleRate);
     
-    // Set the number of sample frames in each buffer
-    setNumSampleFramesPerBuffer(NUM_SAMPLE_FRAMES);
+    // The number of sample frames in each buffer is set once the DMA buffers are allocated
 	setSampleOffset(48);
 	
     workLoop = getWorkLoop();
@@ -141,21 +140,44 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 	    
     // Allocate our input and output buffers
 	// The ICE1712 can only address the first 256 MB (28-bit DMA, see ALSA ice1712.c).
-	// There is no fallback: an unrestricted allocation would be truncated by the chip.
+	// Never fall back to unrestricted memory: the chip would truncate the address.
 	mach_vm_address_t physicalMask;
 	physicalMask = 0x0FFFFFFCULL;
 
-	outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput, &outputBufferDescriptor);
-	if (!outputBuffer) {
-	    IOLog("Envy24: couldn't allocate DMA output buffer below 256 MB\n");
+	// Contiguous memory below 256 MB is scarce once the system is up, so fall back
+	// to smaller buffers rather than fail. 1024 frames is still 21 ms at 48 kHz.
+	static const UInt32 frameChoices[] = { NUM_SAMPLE_FRAMES, 2048, 1024 };
+	numSampleFrames = 0;
+
+	for (UInt32 i = 0; i < sizeof(frameChoices) / sizeof(frameChoices[0]); i++)
+	{
+		card->Specific.BufferSize = frameChoices[i] * DMA_PLAY_SLOTS * sizeof(SInt32);
+		card->Specific.BufferSizeRec = frameChoices[i] * DMA_REC_SLOTS * sizeof(SInt32);
+
+		outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput, &outputBufferDescriptor);
+		if (!outputBuffer)
+			continue;
+
+		inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput, &inputBufferDescriptor);
+		if (!inputBuffer)
+		{
+			outputBufferDescriptor->release();
+			outputBufferDescriptor = NULL;
+			outputBuffer = NULL;
+			continue;
+		}
+
+		numSampleFrames = frameChoices[i];
+		break;
+	}
+
+	if (!numSampleFrames) {
+	    IOLog("Envy24: couldn't allocate DMA buffers below 256 MB, even at 1024 frames\n");
 	    goto Done;
 	}
 
-	inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput, &inputBufferDescriptor);
-	if (!inputBuffer) {
-	    IOLog("Envy24: couldn't allocate DMA input buffer below 256 MB\n");
-	    goto Done;
-	}
+	IOLog("Envy24: DMA buffers %u frames, playback at %llx, capture at %llx\n", numSampleFrames,
+	      (unsigned long long) physicalAddressOutput, (unsigned long long) physicalAddressInput);
 
 	if ((physicalAddressOutput + card->Specific.BufferSize) > 0x10000000ULL ||
 	    (physicalAddressInput + card->Specific.BufferSizeRec) > 0x10000000ULL)
@@ -167,6 +189,8 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 	card->pci_dev->ioWrite32(MT_DMA_PB_ADDRESS, (UInt32) physicalAddressOutput, card->mtbase);
 	card->pci_dev->ioWrite32(MT_DMA_REC_ADDRESS, (UInt32) physicalAddressInput, card->mtbase);
 	card->pci_dev->ioWrite8(MT_SAMPLERATE, 8, card->mtbase); // initialize to 44100 Hz
+
+    setNumSampleFramesPerBuffer(numSampleFrames);
 	
     if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
     {
@@ -180,8 +204,8 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
         recChannels = DMA_REC_SLOTS;
     }
 
-    outputShadowSize = NUM_SAMPLE_FRAMES * playChannels * sizeof(SInt32);
-    inputShadowSize = NUM_SAMPLE_FRAMES * recChannels * sizeof(SInt32);
+    outputShadowSize = numSampleFrames * playChannels * sizeof(SInt32);
+    inputShadowSize = numSampleFrames * recChannels * sizeof(SInt32);
     outputShadow = (SInt32 *)IOMalloc(outputShadowSize);
     inputShadow = (SInt32 *)IOMalloc(inputShadowSize);
     if (!outputShadow || !inputShadow) {
