@@ -9,7 +9,7 @@ BUNDLEID := com.audio-evolution.driver.Envy24
 
 KERNHDR  := $(SDK)/System/Library/Frameworks/Kernel.framework/Headers
 
-KEXT_SRCS := AudioDevice.cpp AudioEngine.cpp I2C.cpp misc.cpp ak_codec.cpp Phase88.cpp
+KEXT_SRCS := AudioDevice.cpp AudioEngine.cpp I2C.cpp misc.cpp ak_codec.cpp Phase88.cpp Delta66.cpp
 LIB_SRCS  := SampleAudioClip.cpp
 
 OBJS := $(addprefix build/obj/,$(KEXT_SRCS:.cpp=.o) $(LIB_SRCS:.cpp=.o) kmod_info.o)

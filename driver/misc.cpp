@@ -8,6 +8,7 @@
 #include <IOKit/audio/IOAudioDefines.h>
 
 #include "Phase88.h"
+#include "Delta66.h"
 #include "cs8427.h"
 
 #define MAUDIO_2496_ID 0x121434D6
@@ -1260,7 +1261,12 @@ int card_init(struct CardData *card)
         }
         CreateParmsForDelta1010LT(card);
     }
-    else if (card->SubType == MAUDIO_DELTA44 || card->SubType == MAUDIO_DELTA66)
+    else if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
+    {
+        Delta66_Init(card);
+        CreateParmsForDelta4466(card);
+    }
+    else if (card->SubType == MAUDIO_DELTA44)
     {
         card->akm_type = AKM4524;
 
@@ -1296,11 +1302,6 @@ int card_init(struct CardData *card)
 
         Init_akm4xxx(card, &card->codec[1]);
         CreateParmsForDelta4466(card);
-        
-        if (card->SubType == MAUDIO_DELTA66)
-        {
-            InitDigitalOut(card);
-        }
     }
     else if (card->SubType == EWX2496)
     {
@@ -1346,6 +1347,15 @@ int card_init(struct CardData *card)
         CreateParmsForDelta410(card);
     }
     
+    if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
+    {
+        // ALSA leaves the routing at its reset value: every PSDOUT plays its
+        // own DMA channels, and capture is not looped back.
+        dev->ioWrite16(0x30, 0x0000, card->mtbase);
+        dev->ioWrite32(0x34, 0x00000000, card->mtbase);
+    }
+    else
+    {
     // turn on monitoring:
     // MT30-31 select digital mixer is input instead of DMA channel 10-11
     dev->ioWrite16(0x30, 0x0101, card->mtbase);
@@ -1354,6 +1364,7 @@ int card_init(struct CardData *card)
     dev->ioWrite32(0x34, 0x00000010, card->mtbase);
 	
 	IOLog("Envy24: Turned on monitoring\n");
+    }
 
     return 0;
 

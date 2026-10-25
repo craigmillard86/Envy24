@@ -18,6 +18,7 @@ struct akm_codec
     unsigned int csnone;
     unsigned int totalmask;
     unsigned int newflag;
+    unsigned char regs[16]; // last value written to each register
 };
 
 #if 0

@@ -12,6 +12,9 @@ void akm4xxx_write(struct CardData *card, struct akm_codec *codec, unsigned char
    int idx;
    unsigned int addrdata = 0;
 
+   if (addr < sizeof(codec->regs))
+      codec->regs[addr] = data;
+
    if (codec->newflag)
    {
       akm4xxx_write_new(card, codec, addr, data);
