@@ -1015,7 +1015,7 @@ int card_init(struct CardData *card)
 {
     IOPCIDevice *dev = (IOPCIDevice *) card->pci_dev;
     int i;
-    unsigned char eeprom[128];
+    unsigned char eeprom[32];
     
     dev->ioWrite8(CCS_ENVY_INDEX, CCI_PRO_POWER_DOWN, card->iobase);
     dev->ioWrite8(CCS_ENVY_DATA, 0xFF, card->iobase);
@@ -1130,12 +1130,32 @@ int card_init(struct CardData *card)
         version = ReadI2C(dev, card, 5);
         
         //IOLog("EEPROM size = %d, version = %d\n", size, version);
+        // Same limits as ALSA snd_ice1712_read_eeprom(): a size below 6 means 32,
+        // anything above 32 is invalid and would overrun eeprom[].
+        if (size < 6)
+            size = 32;
+        else if (size > 32)
+        {
+            IOLog("Envy24: invalid EEPROM size %d\n", size);
+            return -1;
+        }
         size -= 6; // including bytes 0 - 5
         
         for (i = 0; i < size; i++)
         {
             eeprom[i] = ReadI2C(dev, card, i + 6);
         }
+        
+        // ALSA delta.c: a Delta 66 with GPIO direction 0xfb is a rev E board,
+        // which has a CS8427 and different codec pins.
+        if (card->SubType == MAUDIO_DELTA66 && eeprom[6] == 0xfb)
+        {
+            card->SubType = MAUDIO_DELTA66E;
+            IOLog("M-Audio Delta 66 rev E detected!\n");
+        }
+        
+        IOLog("Envy24: EEPROM subvendor %08lx, GPIO mask %02x, state %02x, dir %02x\n",
+              subvendor, eeprom[4], eeprom[5], eeprom[6]);
         
 		dev->configWrite8(0x60, eeprom[0]); // Codecs
         dev->configWrite8(0x61, eeprom[1]); // AC-link
