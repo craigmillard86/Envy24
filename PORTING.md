@@ -351,3 +351,23 @@ Why, from xnu-10063 source:
 
 Smaller buffers won't fix this. The DMA memory has to be set aside before macOS fills low memory,
 or reached through an IOMMU.
+
+### Test 3 setup: enable VT-d
+
+User decision (2026-10-25): try VT-d so the IOMMU can map the DMA buffers below 256 MB.
+VT-d was already enabled in the BIOS. The only thing disabling it was OpenCore's
+`Kernel > Quirks > DisableIoMapper = true` (no DMAR drop in `ACPI > Delete`;
+`DisableIoMapperMapping` is already `false`).
+
+Change on SONOMAEFI (disk1s1), `EFI/OC/config.plist` line 610: `DisableIoMapper` `true` →
+`false`. One-line diff, `plutil -lint` OK.
+Backup: `EFI/OC/config.plist.bak-20261025-2220-pre-vtd`.
+
+**Revert:** copy the backup over `config.plist`. If macOS won't boot, do it from the other EFI
+partition or another OS, or boot with the previous config.
+
+Driver: commit `91a1d56` gets the card address from an `IODMACommand` (28-bit spec). With VT-d
+off, it behaves as before.
+
+Watch after reboot: Wi-Fi (OCLP AirPortBrcmNIC), Ethernet (IntelMausi), USB, sleep.
+These are the devices most likely to be affected by VT-d on this machine.
