@@ -91,25 +91,166 @@ runs 14.8.9.
 `install.sh` and `go` in `driver/` copy the kext into `/System/Library/Extensions`.
 **Never run them.** They're kept only because they're part of the upstream import.
 
+## 3. Adding the Delta 66 (Phase 3)
+
+### What the upstream driver already had (a change of plan)
+
+The brief assumed the macOS driver only knew the Phase 88 and that the Delta 66 would be a copy
+of the Phase 88 board class with a new GPIO map. That's not the case:
+
+- `card_init()` (`misc.cpp`) reads the EEPROM subvendor and already recognized `0x121432d6`
+  as `MAUDIO_DELTA66`, sharing one code path with the Delta 44.
+- That path already used the classic Delta 66 codec pins from `delta.h` (data 0x10, clock 0x20,
+  CS 0x40/0x80) and the same AK4524 write routine as ALSA (`akm4xxx_write_new` matches
+  `snd_ice1712_akm4xxx_write` in `ak4xxx.c` line for line).
+- The Phase 88 drives its codecs through an I²C port expander (CS by writing 0x48), which is a
+  different method. Copying it would have been the wrong starting point.
+
+So `Delta66.cpp`/`Delta66.h` were made by moving the Delta 66 branch out of the shared Delta
+44/66 code and porting the missing parts of ALSA `delta.c` onto it. The layout (Init, lock,
+unlock, pin defines in the header) follows `Phase88.cpp` so the two can be compared. The Delta 44
+code is unchanged.
+
+`ak4xxx.c` wasn't on the brief's list of reference files, but that's where the ICE1712 GPIO
+bit-banging lives; it was fetched into `reference/alsa/`.
+
+### GPIO mapping
+
+Phase 88 uses only three GPIO pins; codec select goes over I²C to an expander (`Phase88.cpp:135`).
+
+| Function | Phase 88 bit | Delta 66 bit | Delta 66 rev E bit | Source (`delta.h`) |
+|---|---|---|---|---|
+| Sample rate mode (DFS, 1 above 48 kHz) | — | 0x01 | 0x01 | :48 `ICE1712_DELTA_DFS` |
+| S/PDIF input status (input) | — | 0x02 | — | :50 `ICE1712_DELTA_SPDIF_IN_STAT` |
+| SPI clock (codecs + CS8427) | — | — | 0x02 | :137 `ICE1712_DELTA_66E_CCLK` |
+| CS8403 status clock | — | 0x04 | — | :55 `ICE1712_DELTA_SPDIF_OUT_STAT_CLOCK` |
+| SPI data in (from CS8427) | — | — | 0x04 | :138 `ICE1712_DELTA_66E_DIN` |
+| CS8403 status data | — | 0x08 | — | :60 `ICE1712_DELTA_SPDIF_OUT_STAT_DATA` |
+| SPI data out (codecs + CS8427) | — | — | 0x08 | :139 `ICE1712_DELTA_66E_DOUT` |
+| Codec read/write direction | 0x08 (`PHASE88_RW`) | — | — | — |
+| Codec serial data | 0x10 (`PHASE88_DATA`) | 0x10 | (0x08, shared DOUT) | :90 `ICE1712_DELTA_CODEC_SERIAL_DATA` |
+| Codec serial clock | 0x20 (`PHASE88_CLOCK`) | 0x20 | (0x02, shared CCLK) | :92 `ICE1712_DELTA_CODEC_SERIAL_CLOCK` |
+| CS8427 chip select (low = selected) | — | — | 0x10 | :140 `ICE1712_DELTA_66E_CS_CS8427` |
+| AK4524 chip A select | I²C expander | 0x40 | 0x20 | :95 `ICE1712_DELTA_CODEC_CHIP_A`, :141 `..._66E_CS_CHIP_A` |
+| AK4524 chip B select | I²C expander | 0x80 | 0x40 | :96 `ICE1712_DELTA_CODEC_CHIP_B`, :142 `..._66E_CS_CHIP_B` |
+
+Codec write protocol (both revisions, `akm_delta44_priv` delta.c:531 and `akm_delta66e_priv`
+delta.c:508): `caddr = 2`, `cif = 0`, `cs_mask == cs_addr` = the chip's select bit. That means CS
+is driven low, 16 bits are clocked out MSB first on the rising edge, then CS goes high to latch.
+
+### What was ported from ALSA
+
+| ALSA (`delta.c`) | macOS (`Delta66.cpp`) |
+|---|---|
+| `delta_ak4524_lock` :247 / `delta66e_ak4524_lock` :274 | `Delta66_SetupCodec` sets the per-chip select once (we keep one `akm_codec` per chip); `Delta66_ak4524_lock` saves GPIO dir and mask like `snd_ice1712_save_gpio_status` |
+| `snd_ice1712_restore_gpio_status` (`ice1712.h`) | `Delta66_ak4524_unlock` restores dir and mask, **not** data |
+| `delta_ak4524_set_rate_val` :322 | `Delta66_set_rate_val`: only acts if DFS changes; resets codecs (reg 1 = 0), flips DFS, releases reset (reg 1 = 3) and rewrites regs 4-7 |
+| `ak4524_reset` (`ak4xxx-adda.c`) | `Delta66_ak4524_reset`, using a new per-codec register cache (`akm_codec.regs`, filled in `akm4xxx_write`) |
+| rev E detection :624-626 | `card_init`: Delta 66 ID + EEPROM GPIO dir `0xfb` → `MAUDIO_DELTA66E` |
+| "initialize the SPI clock to high" :665 | `Delta66_Init` sets GPIO 0x02 high on both revisions |
+
+`set_rate_val` is called from `performFormatChange` after the rate register is written, the same
+order as ALSA. With only 44.1/48 kHz offered, it just makes sure DFS is clear.
+
+Locking: ALSA takes `gpio_mutex`. Here, every codec write happens either in `card_init` or under
+the IOAudioDevice command gate (control changes, format changes), and the interrupt filter never
+touches GPIO, so no extra lock was added.
+
+### EEPROM
+
+The macOS driver reads the EEPROM like ALSA (`ice1712.c:2234-2310`), with the same layout:
+config bytes 0x60-0x63 from data[0-3], GPIO mask/state/dir from data[4-6] (`ICE_EEP1_GPIO_*`).
+Nothing is hard-coded for the Delta 66. Two fixes, following ALSA:
+
+- the size byte is now bounded (<6 → 32, >32 → error). Upstream read up to 249 bytes into
+  `eeprom[128]` on the stack.
+- GPIO mask, state and direction are logged at load so the board revision can be confirmed from
+  `log show`.
+
+ALSA writes mask, then dir, then data; upstream writes mask, data, dir. Left as upstream: all
+three are written before any codec access.
+
+### S/PDIF
+
+- **Classic Delta 66:** the transmitter is a CS8403 programmed by bit-banging GPIO 0x04/0x08.
+  Upstream did write it (`InitDigitalOut`), and ALSA does too. For this pass it's **disabled**:
+  `InitDigitalOut` is no longer called for the Delta 66, and the DMA S/PDIF slots (8-9) aren't
+  exposed.
+- **Rev E:** has a CS8427 on the shared SPI lines with select 0x10. The upstream CS8427 code is
+  written for the Audiophile pin map. It **isn't used** in this pass. `Delta66_Init` drives 0x10
+  high so the CS8427 ignores codec traffic on DOUT/CCLK (the state ALSA's
+  `ap_cs8427_codec_deassert` leaves it in).
+
+### Channel mapping
+
+The ICE1712 multi-track DMA always moves full frames: playback 10 × 32-bit slots (PSDOUT0-3 L/R,
+then S/PDIF L/R), capture 12 slots (PSDIN0-3 L/R, S/PDIF L/R, digital mixer L/R). Upstream gave
+Core Audio the DMA buffers directly, so every card showed up as 10 out / 12 in; `NumChannels` was
+set but never read.
+
+Now Core Audio gets shadow sample buffers sized for the exposed channel count, and
+`clipOutputSamples`, `convertInputSamples` and `eraseOutputSamples` read and write the DMA
+buffers with the 10/12-slot stride. Core Audio channel *n* is DMA slot *n*:
+
+| Core Audio | DMA slot | Codec |
+|---|---|---|
+| Out 1/2 | PSDOUT0 L/R (0, 1) | AK4524 A DAC |
+| Out 3/4 | PSDOUT1 L/R (2, 3) | AK4524 B DAC |
+| In 1/2 | PSDIN0 L/R (0, 1) | AK4524 A ADC |
+| In 3/4 | PSDIN1 L/R (2, 3) | AK4524 B ADC |
+
+This matches ALSA, where Delta 66 PCM channels 0-3 are DACs/ADCs 1-4. Other cards keep 10/12.
+
+### Where ALSA and the macOS driver disagreed
+
+| Item | Upstream macOS | ALSA | Now |
+|---|---|---|---|
+| MT 0x30 PSDOUT route | `0x0101`: outputs 1/2 from the digital monitor mixer | reset value 0: each PSDOUT plays its DMA slots | ALSA (Delta 66 only) |
+| MT 0x34 capture route | `0x10` loopback | 0 | ALSA (Delta 66 only) |
+| DFS / rate change | never touched | `delta_ak4524_set_rate_val` | ALSA |
+| Rev E | treated as classic (wrong pins) | detected via GPIO dir 0xfb | ALSA |
+| EEPROM size check | none | 6..32 | ALSA |
+| CS8403 init on classic | yes | yes | neither, for now (brief: digital off) |
+| AK4524 regs 4-7 at init | ADC 0x80 (0 dB), DAC 0x7E | 0 (muted), then restored from the ALSA mixer | **upstream**: macOS has no mixer-restore step, so ALSA's values would leave the card silent |
+
+### Other fixes found along the way
+
+- Clip: `float * 2147483647.0` rounds to 2^31 and overflows `SInt32` at exactly +1.0, giving a
+  full-scale negative sample. It now scales to 24 bits and shifts left by 8.
+- Stream format now says what the hardware does: 24 bits in 32-bit little-endian slots. The
+  advertised 16-bit format was dropped, since the clip routine always wrote 32-bit samples.
+- `performFormatChange` reset the hardware to 44.1 kHz on any change that had no new rate.
+- Delta 66 offers 44.1 and 48 kHz only for now.
+
+### Info.plist
+
+The single `IOPCIMatch 0x17121412` is replaced by two personalities, both `IOPCIPrimaryMatch
+0x17121412`:
+
+- `Envy24 Delta 66`: `IOPCISecondaryMatch 0xd6321412` (subsystem 1412:d632 from section 1).
+  This matches both the classic and the rev E; `card_init` tells them apart.
+- `Envy24 Phase 88`: `IOPCISecondaryMatch 0x1151153b 0x1115153b 0x1125153b 0x117c153b`. These
+  are upstream's Terratec EEPROM IDs converted with ALSA's swab16 rule. They can't match this card.
+
+Other ICE1712 boards (Audiophile, 1010LT, Delta 44, ...) no longer match at all.
+
+### Build check
+
+`make clean && make` has no errors. `kmutil print-diagnostics`: **Dependencies: OK** (plus the
+expected unsigned/ownership notes). The new imports (`IOMalloc`, `IOFree`, `bzero`) are in the
+XNU exports (`IOMalloc` as an alias of `IOMalloc_external`).
+
 ## Open items
 
-### MUST FIX before first load: DMA buffer can land above the chip's 28-bit limit
-
-ALSA limits ICE1712 DMA to 28 bits (`ice1712.c:2468`, `DMA_BIT_MASK(28)`). Upstream
-`AudioEngine.cpp:142-182`:
-
-- first tries `IOBufferMemoryDescriptor::inTaskWithPhysicalMask(..., 0x0FFFFFFC)`, which is correct;
-- **if that fails, it falls back to `IOMallocContiguous()` with no address limit**;
-- if the address is above 256 MB it only logs (`Address of output is above 256 MB!`) and then
-  writes the address to `MT_DMA_PB_ADDRESS`/`MT_DMA_REC_ADDRESS` anyway via `ioWrite32`.
-
-This host has 16 GB of RAM and no VT-d remapping (`AppleVTD` has 0 instances, so the card sees
-raw physical addresses). If the masked allocation fails, the card will DMA to a truncated address:
-silent memory corruption or a panic. The fix is to drop the fallback and fail `initHardware`
-instead. That's a logic change, so it's deferred to the start of Phase 3.
-
-### Other
-
-- Board revision (classic vs. rev E) is unknown; it needs an EEPROM read at runtime (section 1).
-- `getPhysicalAddress()` is only correct while there's no IOMMU. If VT-d is ever enabled, DMA
-  needs to go through `IODMACommand`.
+- **Board revision** is still unknown until the first load. Look for
+  `M-Audio Delta 66 detected!` / `rev E detected!` and the `EEPROM ... GPIO ... dir` line.
+- **Untested on hardware.** Nothing from Phase 3 has run yet.
+- Volume controls: DAC regs 6/7 on the AK4524 are linear attenuation, but upstream presents them
+  as -49..0 dB linearly. ALSA uses a conversion table (`vol_cvt_datt`). Cosmetic for now.
+- Input gain: upstream writes IPGA 128..164 directly; ALSA adds 1 above 128. Check against the
+  AK4524 datasheet.
+- 88.2/96 kHz: `Delta66_set_rate_val` already handles DFS, but those rates aren't offered yet.
+- S/PDIF: CS8403 (classic) or CS8427 (rev E), and DMA slots 8-9.
+- `getPhysicalAddress()` is only correct while there's no IOMMU (VT-d is off here: `AppleVTD` has
+  0 instances). Enabling VT-d would need `IODMACommand`.
+- Device name is still "Envy24" in Audio MIDI Setup.
