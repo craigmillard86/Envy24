@@ -254,3 +254,50 @@ XNU exports (`IOMalloc` as an alias of `IOMalloc_external`).
 - `getPhysicalAddress()` is only correct while there's no IOMMU (VT-d is off here: `AppleVTD` has
   0 instances). Enabling VT-d would need `IODMACommand`.
 - Device name is still "Envy24" in Audio MIDI Setup.
+
+## 4. Load and test (Phase 4)
+
+### OpenCore injection doesn't work for this kext on Sonoma
+
+OpenCore `Kernel > Add` injects into the boot kernel collection, and an injected kext can only
+link against kexts in that collection. `kmutil inspect` on this host shows IOPCIFamily in the
+boot collection but **IOAudioFamily only in the system collection**. OpenCore would fail to link
+the kext and skip it. Nothing was written to the EFI partition (`SONOMAEFI`, disk1s1) and
+`config.plist` is untouched.
+
+Options looked at and rejected:
+- injecting a copy of IOAudioFamily (from a KDK) via OpenCore: AppleHDA, used by AppleALC for the
+  onboard ALC280, is pre-linked against the system collection's copy, so a second copy risks
+  breaking onboard audio or panicking.
+- splitting into a PCI-only kext (OpenCore-injectable) plus a Core Audio HAL plug-in: viable,
+  but it's a rewrite of the audio side. Deferred until the hardware code has been proven on the card.
+
+### Install via /Library/Extensions (test only)
+
+**Rule waiver:** the user approved breaking the brief's "never install to `/Library/Extensions`"
+and "don't touch kext caches" rules for this test (2026-10-25). Third-party kexts on Sonoma load
+from the auxiliary kernel collection in `/Library/KernelCollections`. No SIP, NVRAM or OpenCore
+change is involved; SIP already allows unsigned kexts (`csr-active-config` 03080000).
+
+Kext installed: `build/Envy24PCIAudioDriver.kext` from commit `74a3ee5`, executable SHA-256
+`e73dde23ac80237e1da88d608a16e684d2e33cbff5b79a922f70fd1fc6fbf5fa`.
+
+Steps (run by the user in Terminal):
+
+    sudo cp -R ~/src/envy24-delta66/build/Envy24PCIAudioDriver.kext /Library/Extensions/
+    sudo chown -R root:wheel /Library/Extensions/Envy24PCIAudioDriver.kext
+    sudo chmod -R go-w /Library/Extensions/Envy24PCIAudioDriver.kext
+    sudo kmutil load -p /Library/Extensions/Envy24PCIAudioDriver.kext
+    # approve in System Settings > Privacy & Security, let it rebuild, then reboot
+
+### Revert
+
+    sudo rm -rf /Library/Extensions/Envy24PCIAudioDriver.kext
+    sudo kmutil clear-staging
+    sudo kmutil create -n aux --boot-path /System/Library/KernelCollections/BootKernelExtensions.kc --system-path /System/Library/KernelCollections/SystemKernelExtensions.kc
+    # reboot
+
+**If it panics at boot:** boot in safe mode (add `-x` to boot-args from the OpenCore picker,
+or hold Shift). Safe mode skips the auxiliary kernel collection, so the kext won't load. Then
+collect `/Library/Logs/DiagnosticReports/*.panic` and run the revert steps. Don't reboot again
+until the panic has been looked at.
