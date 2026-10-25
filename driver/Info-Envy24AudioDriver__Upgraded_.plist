@@ -20,14 +20,29 @@
 	<string>0.22.0</string>
 	<key>IOKitPersonalities</key>
 	<dict>
-		<key>Envy24PCIAudioDriver</key>
+		<key>Envy24 Delta 66</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
 			<string>com.audio-evolution.driver.Envy24</string>
 			<key>IOClass</key>
 			<string>com_audio_evolution_driver_Envy24</string>
-			<key>IOPCIMatch</key>
+			<key>IOPCIPrimaryMatch</key>
 			<string>0x17121412</string>
+			<key>IOPCISecondaryMatch</key>
+			<string>0xd6321412</string>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
+		</dict>
+		<key>Envy24 Phase 88</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.audio-evolution.driver.Envy24</string>
+			<key>IOClass</key>
+			<string>com_audio_evolution_driver_Envy24</string>
+			<key>IOPCIPrimaryMatch</key>
+			<string>0x17121412</string>
+			<key>IOPCISecondaryMatch</key>
+			<string>0x1151153b 0x1115153b 0x1125153b 0x117c153b</string>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
 		</dict>
