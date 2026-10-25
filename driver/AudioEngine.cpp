@@ -7,6 +7,7 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include "regs.h"
 #include "misc.h"
+#include "Delta66.h"
 
 #define INITIAL_SAMPLE_RATE	44100
 
@@ -163,12 +164,35 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 		goto Done;
 	}
 
-	card->pci_dev->ioWrite32(MT_DMA_PB_ADDRESS, physicalAddressOutput, card->mtbase);
-	card->pci_dev->ioWrite32(MT_DMA_REC_ADDRESS, physicalAddressInput, card->mtbase);
+	card->pci_dev->ioWrite32(MT_DMA_PB_ADDRESS, (UInt32) physicalAddressOutput, card->mtbase);
+	card->pci_dev->ioWrite32(MT_DMA_REC_ADDRESS, (UInt32) physicalAddressInput, card->mtbase);
 	card->pci_dev->ioWrite8(MT_SAMPLERATE, 8, card->mtbase); // initialize to 44100 Hz
 	
+    if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
+    {
+        // two AK4524 codecs on PSDOUT0/1 and PSDIN0/1; S/PDIF not enabled yet
+        playChannels = 4;
+        recChannels = 4;
+    }
+    else
+    {
+        playChannels = DMA_PLAY_SLOTS;
+        recChannels = DMA_REC_SLOTS;
+    }
+
+    outputShadowSize = NUM_SAMPLE_FRAMES * playChannels * sizeof(SInt32);
+    inputShadowSize = NUM_SAMPLE_FRAMES * recChannels * sizeof(SInt32);
+    outputShadow = (SInt32 *)IOMalloc(outputShadowSize);
+    inputShadow = (SInt32 *)IOMalloc(inputShadowSize);
+    if (!outputShadow || !inputShadow) {
+        IOLog("Envy24: couldn't allocate sample buffers\n");
+        goto Done;
+    }
+    bzero(outputShadow, outputShadowSize);
+    bzero(inputShadow, inputShadowSize);
+
     // Create an IOAudioStream for each buffer and add it to this audio engine
-    audioStream = createNewAudioStream(kIOAudioStreamDirectionOutput, outputBuffer, card->Specific.BufferSize, 0, 10);
+    audioStream = createNewAudioStream(kIOAudioStreamDirectionOutput, outputShadow, outputShadowSize, 0, playChannels);
     if (!audioStream) {
         goto Done;
     }
@@ -177,7 +201,7 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
     audioStream->release();
 
 	
-    audioStream = createNewAudioStream(kIOAudioStreamDirectionInput, inputBuffer, card->Specific.BufferSizeRec, 1, 12);
+    audioStream = createNewAudioStream(kIOAudioStreamDirectionInput, inputShadow, inputShadowSize, 1, recChannels);
     if (!audioStream) {
         goto Done;
     }
@@ -241,6 +265,16 @@ void Envy24AudioEngine::free()
         inputBufferDescriptor = NULL;
         inputBuffer = NULL;
     }
+
+    if (outputShadow) {
+        IOFree(outputShadow, outputShadowSize);
+        outputShadow = NULL;
+    }
+
+    if (inputShadow) {
+        IOFree(inputShadow, inputShadowSize);
+        inputShadow = NULL;
+    }
     
     super::free();
 }
@@ -263,42 +297,34 @@ IOAudioStream *Envy24AudioEngine::createNewAudioStream(IOAudioStreamDirection di
             audioStream->release();
         } else {
             IOAudioSampleRate rate;
+            // The ICE1712 uses 32-bit little-endian slots with 24 significant bits at the top
             IOAudioStreamFormat format = {
                 channels,										// num channels
                 kIOAudioStreamSampleFormatLinearPCM,			// sample format
                 kIOAudioStreamNumericRepresentationSignedInt,	// numeric format
                 24,												// bit depth
-                24,												// bit width
-                kIOAudioStreamAlignmentHighByte,				// high byte aligned - unused because bit depth == bit width
-                kIOAudioStreamByteOrderBigEndian,    			// little endian
+                32,												// bit width
+                kIOAudioStreamAlignmentHighByte,				// 24 bits in the high bytes of 32
+                kIOAudioStreamByteOrderLittleEndian,			// little endian
                 true,											// format is mixable
-                channel											// number of channel
-            };
-            
-            IOAudioStreamFormat format16 = {
-                channels,										// num channels
-                kIOAudioStreamSampleFormatLinearPCM,			// sample format
-                kIOAudioStreamNumericRepresentationSignedInt,	// numeric format
-                16,												// bit depth
-                16,												// bit width
-                kIOAudioStreamAlignmentHighByte,				// high byte aligned - unused because bit depth == bit width
-                kIOAudioStreamByteOrderBigEndian,    			// little endian
-                true,											// format is mixable
-                channel											// number of channel
+                channel											// driver tag
             };
 
             // As part of creating a new IOAudioStream, its sample buffer needs to be set
             // It will automatically create a mix buffer should it be needed
             audioStream->setSampleBuffer(sampleBuffer, sampleBufferSize);
 			
-			// This device only allows a single format and a choice of 2 different sample rates
             rate.fraction = 0;
 
 			for (int i = 0; i < FREQUENCIES; i++)
 			{
+				// first pass for the Delta 66: 44.1 and 48 kHz only
+				if ((card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E) &&
+				    Frequencies[i] != 44100 && Frequencies[i] != 48000)
+					continue;
+
 				rate.whole = Frequencies[i];
 				audioStream->addAvailableFormat(&format, &rate, &rate, NULL, 0);
-                audioStream->addAvailableFormat(&format16, &rate, &rate, NULL, 0);
 			}
 						
 			// Finally, the IOAudioStream's current format needs to be indicated
@@ -405,7 +431,7 @@ UInt32 Envy24AudioEngine::getCurrentSampleFrame()
     // erased.
 
     // Change to return the real value
-	const UInt32 div = 10 * (32 / 8);
+	const UInt32 div = DMA_PLAY_SLOTS * (32 / 8);
 	UInt32 current_address = card->pci_dev->ioRead32(MT_DMA_PB_ADDRESS, card->mtbase);
 	UInt32 diff = (current_address - ((UInt32) physicalAddressOutput)) / div;
     //IOLog("diff = %lu\n", diff);
@@ -417,18 +443,23 @@ IOReturn Envy24AudioEngine::performFormatChange(IOAudioStream *audioStream, cons
 {
     DBGPRINT("Envy24AudioEngine[%p]::peformFormatChange(%p, %p, %p)\n", this, audioStream, newFormat, newSampleRate);
     
-	if (newSampleRate)
+	// A format change without a new rate must leave the hardware rate alone
+	if (!newSampleRate)
 	{
-		currentSampleRate = newSampleRate->whole;
+		return kIOReturnSuccess;
 	}
-	else
-	{
-		currentSampleRate = 44100;
-	}
+
+	currentSampleRate = newSampleRate->whole;
 	
 	UInt32 FreqBits = lookUpFrequencyBits(currentSampleRate, Frequencies, FrequencyBits, FREQUENCIES, 0x08);
-	card->pci_dev->ioWrite8(MT_SAMPLERATE, FreqBits, card->mtbase);
+	card->pci_dev->ioWrite8(MT_SAMPLERATE, (UInt8) FreqBits, card->mtbase);
 	IOLog("Freq = %x\n", FreqBits);
+
+	// ALSA calls the codec set_rate_val after programming the rate register
+	if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
+	{
+		Delta66_set_rate_val(card, currentSampleRate);
+	}
 
 	/*UInt32 SPDIFBits = lookUpFrequencyBits(currentSampleRate, SPDIF_Frequencies, SPDIF_FrequencyBits, SPDIF_FREQUENCIES, 1000);
 	ClearMask8(card->pci_dev, card->iobase, CCS_SPDIF_CONFIG, CCS_SPDIF_INTEGRATED);

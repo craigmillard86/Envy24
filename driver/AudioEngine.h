@@ -7,6 +7,11 @@
 
 #define Envy24AudioEngine com_Envy24AudioEngine
 
+// The ICE1712 multi-track DMA always moves full frames:
+// playback = PSDOUT0-3 L/R + S/PDIF L/R, capture = PSDIN0-3 L/R + S/PDIF L/R + digital mixer L/R
+#define DMA_PLAY_SLOTS	10
+#define DMA_REC_SLOTS	12
+
 class IOFilterInterruptEventSource;
 class IOBufferMemoryDescriptor;
 class IOInterruptEventSource;
@@ -37,6 +42,7 @@ public:
 
     virtual IOReturn clipOutputSamples(const void *mixBuf, void *sampleBuf, UInt32 firstSampleFrame, UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat, IOAudioStream *audioStream);
     virtual IOReturn convertInputSamples(const void *sampleBuf, void *destBuf, UInt32 firstSampleFrame, UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat, IOAudioStream *audioStream);
+    virtual IOReturn eraseOutputSamples(const void *mixBuf, void *sampleBuf, UInt32 firstSampleFrame, UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat, IOAudioStream *audioStream);
     
     static void interruptHandler(OSObject *owner, IOInterruptEventSource *source, int count);
     static bool interruptFilter(OSObject *owner, IOFilterInterruptEventSource *source);
@@ -48,6 +54,15 @@ private:
     
 	SInt32							*inputBuffer;
     SInt32							*outputBuffer;
+
+	// Core Audio sees only the first playChannels/recChannels slots of each DMA frame.
+	// Its sample buffers are these shadows; clip/convert move data to and from the DMA buffers.
+	UInt32							playChannels;
+	UInt32							recChannels;
+	SInt32							*outputShadow;
+	SInt32							*inputShadow;
+	UInt32							outputShadowSize;
+	UInt32							inputShadowSize;
     IOBufferMemoryDescriptor		*inputBufferDescriptor;
     IOBufferMemoryDescriptor		*outputBufferDescriptor;
     
