@@ -329,3 +329,25 @@ the card DMA to a truncated address. No audio device appeared in Core Audio.
 
 Fix: try 4096, then 2048, then 1024 frames per buffer (playback 160/80/40 KB, capture
 192/96/48 KB), and log the size and physical addresses that were used.
+
+### Test 2 (2026-10-25 22:10): smaller buffers don't help
+
+Same result at 4096, 2048 and 1024 frames, all three failing in the same millisecond:
+
+    Failed to allocate memory within the first 256MB address space!   (x3)
+    Envy24: couldn't allocate DMA buffers below 256 MB, even at 1024 frames
+
+Why, from xnu-10063 source:
+- With no IOMMU, `IOBufferMemoryDescriptor::inTaskWithPhysicalMask(..., 0x0FFFFFFC)` passes the
+  limit unchanged to `kmem_alloc_contig(max_pnum = 0xFFFF)` (`IOBufferMemoryDescriptor.cpp`,
+  `IOLib.cpp IOKernelAllocateWithPhysicalRestrict`).
+- `vm_page_find_contiguous` (`vm_resident.c`) scans `vm_pages[]`, which on x86 is in increasing
+  physical order. It stops at the first page above `max_pnum` and wraps once to index 0. So a
+  failure means there's no run of even 10 free or stealable pages anywhere below 256 MB.
+- Likely cause: the boot loader places the kernel and the kernel collections (system 360 MB,
+  boot 63 MB, aux 9 MB) in low physical memory, where they stay wired. That fills the region
+  the ICE1712 can reach. Not proven: the booter's `memory-map` entries are gone by the time
+  macOS is running.
+
+Smaller buffers won't fix this. The DMA memory has to be set aside before macOS fills low memory,
+or reached through an IOMMU.
