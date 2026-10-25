@@ -14,6 +14,7 @@
 
 class IOFilterInterruptEventSource;
 class IOBufferMemoryDescriptor;
+class IODMACommand;
 class IOInterruptEventSource;
 
 class Envy24AudioEngine : public IOAudioEngine
@@ -66,6 +67,8 @@ private:
 	UInt32							inputShadowSize;
     IOBufferMemoryDescriptor		*inputBufferDescriptor;
     IOBufferMemoryDescriptor		*outputBufferDescriptor;
+    IODMACommand					*inputDMACommand;
+    IODMACommand					*outputDMACommand;
     
 	IOPhysicalAddress               physicalAddressInput;
 	IOPhysicalAddress               physicalAddressOutput;
@@ -76,7 +79,8 @@ private:
 	void * IOMallocContiguousWithLimit(vm_size_t size,
 									   mach_vm_address_t          physicalMask,
 									   IOPhysicalAddress * physicalAddress,
-									   IOBufferMemoryDescriptor ** descriptor);
+									   IOBufferMemoryDescriptor ** descriptor,
+									   IODMACommand ** command);
 };
 
 #endif /* _Envy24AudioEngine_H */

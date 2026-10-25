@@ -3,6 +3,7 @@
 #include <IOKit/IOLib.h>
 
 #include <IOKit/IOFilterInterruptEventSource.h>
+#include <IOKit/IODMACommand.h>
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include "regs.h"
@@ -140,6 +141,7 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 	    
     // Allocate our input and output buffers
 	// The ICE1712 can only address the first 256 MB (28-bit DMA, see ALSA ice1712.c).
+	// With VT-d active the IOMMU provides such an address for any buffer.
 	// Never fall back to unrestricted memory: the chip would truncate the address.
 	mach_vm_address_t physicalMask;
 	physicalMask = 0x0FFFFFFCULL;
@@ -154,13 +156,16 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 		card->Specific.BufferSize = frameChoices[i] * DMA_PLAY_SLOTS * sizeof(SInt32);
 		card->Specific.BufferSizeRec = frameChoices[i] * DMA_REC_SLOTS * sizeof(SInt32);
 
-		outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput, &outputBufferDescriptor);
+		outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput, &outputBufferDescriptor, &outputDMACommand);
 		if (!outputBuffer)
 			continue;
 
-		inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput, &inputBufferDescriptor);
+		inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput, &inputBufferDescriptor, &inputDMACommand);
 		if (!inputBuffer)
 		{
+			outputDMACommand->clearMemoryDescriptor();
+			outputDMACommand->release();
+			outputDMACommand = NULL;
 			outputBufferDescriptor->release();
 			outputBufferDescriptor = NULL;
 			outputBuffer = NULL;
@@ -176,7 +181,7 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 	    goto Done;
 	}
 
-	IOLog("Envy24: DMA buffers %u frames, playback at %llx, capture at %llx\n", numSampleFrames,
+	IOLog("Envy24: DMA buffers %u frames, playback device address %llx, capture %llx\n", numSampleFrames,
 	      (unsigned long long) physicalAddressOutput, (unsigned long long) physicalAddressInput);
 
 	if ((physicalAddressOutput + card->Specific.BufferSize) > 0x10000000ULL ||
@@ -278,6 +283,18 @@ void Envy24AudioEngine::free()
         interruptEventSource = NULL;
     }
     
+    if (outputDMACommand) {
+        outputDMACommand->clearMemoryDescriptor();
+        outputDMACommand->release();
+        outputDMACommand = NULL;
+    }
+
+    if (inputDMACommand) {
+        inputDMACommand->clearMemoryDescriptor();
+        inputDMACommand->release();
+        inputDMACommand = NULL;
+    }
+
     if (outputBufferDescriptor) {
         outputBufferDescriptor->release();
         outputBufferDescriptor = NULL;
@@ -571,33 +588,62 @@ UInt32 Envy24AudioEngine::lookUpFrequencyBits(UInt32 Frequency,
 void * Envy24AudioEngine::IOMallocContiguousWithLimit(vm_size_t size,
 													  mach_vm_address_t physicalMask,
 						                              IOPhysicalAddress * physicalAddress,
-						                              IOBufferMemoryDescriptor ** descriptor)
+						                              IOBufferMemoryDescriptor ** descriptor,
+						                              IODMACommand ** command)
 {
-	 mach_vm_address_t   address = 0;
- 
-	 if (size == 0)
-			 return 0;
-		 		    
-	 {
-		 IOBufferMemoryDescriptor * bmd;
-         
-		 bmd = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-									kernel_task, kIOMemoryPhysicallyContiguous, size, physicalMask);
-		 if (!bmd)
-		 {
-			 IOLog("Failed to allocate memory within the first 256MB address space!\n");
-		     return NULL;
-		 }
-			
-		 IOLog("Memory allocated OK!\n");
-	 
-	     address          = (mach_vm_address_t) bmd->getBytesNoCopy();
-		 *physicalAddress = bmd->getPhysicalAddress();
-		 *descriptor      = bmd;
-		 IOLog("phys = %llx, virt = %llx\n", (unsigned long long) *physicalAddress, (unsigned long long) address);
-	 }
-	 
-     return (void *) address;
+	IOBufferMemoryDescriptor *bmd;
+	IODMACommand *dma;
+	IODMACommand::Segment64 segment;
+	UInt64 offset = 0;
+	UInt32 numSegments = 1;
+
+	if (size == 0)
+		return NULL;
+
+	// With an IOMMU (VT-d) the buffer can be anywhere in RAM; the mask then only limits
+	// the device address the mapper hands out. Without one, the buffer itself has to be
+	// physically contiguous below the mask.
+	bmd = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+			kIOMemoryPhysicallyContiguous | kIODirectionInOut, size, physicalMask);
+	if (!bmd)
+	{
+		IOLog("Failed to allocate memory within the first 256MB address space!\n");
+		return NULL;
+	}
+
+	// The address the card must use: an IOMMU address if VT-d is active, else physical.
+	// 28 address bits, one segment, as ALSA's DMA_BIT_MASK(28).
+	dma = IODMACommand::withSpecification(kIODMACommandOutputHost64, 28, 0,
+			IODMACommand::kMapped, 0, 1);
+	if (!dma || dma->setMemoryDescriptor(bmd) != kIOReturnSuccess)
+	{
+		IOLog("Envy24: couldn't prepare DMA command\n");
+		if (dma)
+			dma->release();
+		bmd->release();
+		return NULL;
+	}
+
+	if (dma->gen64IOVMSegments(&offset, &segment, &numSegments) != kIOReturnSuccess ||
+	    numSegments != 1 || segment.fLength < size ||
+	    (segment.fIOVMAddr + size) > (physicalMask | 0x3) + 1)
+	{
+		IOLog("Envy24: DMA address unusable (%u segments, addr %llx, len %llx)\n",
+		      numSegments, segment.fIOVMAddr, segment.fLength);
+		dma->clearMemoryDescriptor();
+		dma->release();
+		bmd->release();
+		return NULL;
+	}
+
+	*physicalAddress = segment.fIOVMAddr;
+	*descriptor = bmd;
+	*command = dma;
+
+	IOLog("Envy24: DMA buffer %llx bytes, device address %llx, virt %p\n",
+	      (unsigned long long) size, segment.fIOVMAddr, bmd->getBytesNoCopy());
+
+	return bmd->getBytesNoCopy();
 }
 
 
