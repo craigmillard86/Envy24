@@ -371,3 +371,19 @@ off, it behaves as before.
 
 Watch after reboot: Wi-Fi (OCLP AirPortBrcmNIC), Ethernet (IntelMausi), USB, sleep.
 These are the devices most likely to be affected by VT-d on this machine.
+
+### Test 3 (2026-10-25 22:23): VT-d on, device appears
+
+- `AppleVTD` loaded (`IOMapper` active). No VT-d faults in the log. Ethernet (en0) and Wi-Fi
+  (en1) have addresses and pass traffic; USB enumerates.
+- Driver:
+
+      Envy24: DMA buffer 28000 bytes, device address 280000
+      Envy24: DMA buffer 30000 bytes, device address 2c0000
+      Envy24: DMA buffers 4096 frames, playback device address 280000, capture 2c0000
+
+  Full-size buffers on the first try, at IOMMU addresses inside the 28-bit window.
+- Engine and level controls created. `system_profiler SPAudioDataType`: **Envy24, 4 in / 4 out,
+  44100 Hz**. macOS made it the default input automatically.
+- `say -a Envy24 ...`: engine goes to state 1 (running) with one client; the device moves to its
+  active power state.
