@@ -8,6 +8,7 @@
 #define Envy24AudioEngine com_Envy24AudioEngine
 
 class IOFilterInterruptEventSource;
+class IOBufferMemoryDescriptor;
 class IOInterruptEventSource;
 
 class Envy24AudioEngine : public IOAudioEngine
@@ -47,6 +48,8 @@ private:
     
 	SInt32							*inputBuffer;
     SInt32							*outputBuffer;
+    IOBufferMemoryDescriptor		*inputBufferDescriptor;
+    IOBufferMemoryDescriptor		*outputBufferDescriptor;
     
 	IOPhysicalAddress               physicalAddressInput;
 	IOPhysicalAddress               physicalAddressOutput;
@@ -56,7 +59,8 @@ private:
 	
 	void * IOMallocContiguousWithLimit(vm_size_t size,
 									   mach_vm_address_t          physicalMask,
-									   IOPhysicalAddress * physicalAddress);
+									   IOPhysicalAddress * physicalAddress,
+									   IOBufferMemoryDescriptor ** descriptor);
 };
 
 #endif /* _Envy24AudioEngine_H */

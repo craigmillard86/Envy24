@@ -139,45 +139,30 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 	
 	    
     // Allocate our input and output buffers
+	// The ICE1712 can only address the first 256 MB (28-bit DMA, see ALSA ice1712.c).
+	// There is no fallback: an unrestricted allocation would be truncated by the chip.
 	mach_vm_address_t physicalMask;
 	physicalMask = 0x0FFFFFFCULL;
 
-	
-	outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput);
+	outputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSize, physicalMask, &physicalAddressOutput, &outputBufferDescriptor);
 	if (!outputBuffer) {
-	    IOLog("Couldn't allocate memory for output buffer using IOMallocContiguousWithLimit(), trying IOMallocContiguous()!\n");
-        outputBuffer = (SInt32 *)IOMallocContiguous(card->Specific.BufferSize, 4, &physicalAddressOutput);
-        
-        if (outputBuffer == NULL)
-        {
-            IOLog("Couldn't allocate memory for output buffer using malloc()!");
-            goto Done;
-        }
-    }
-	
-	inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput);
-    if (!inputBuffer) {
-        IOLog("Couldn't allocate memory for input buffer using IOMallocContiguousWithLimit(), trying IOMallocContiguous()!\n");
-        inputBuffer = (SInt32 *)IOMallocContiguous(card->Specific.BufferSizeRec, 4, &physicalAddressInput);
-        
-        if (inputBuffer == NULL)
-        {
-            IOLog("Couldn't allocate memory for input buffer using malloc()!");
-            goto Done;
-        }
-    }
-    
-	if (physicalAddressOutput > 0x0FFFFFFF)
-	{
-		IOLog("Address of output is above 256 MB!");
+	    IOLog("Envy24: couldn't allocate DMA output buffer below 256 MB\n");
+	    goto Done;
 	}
-	
-	if (physicalAddressInput > 0x0FFFFFFF)
-	{
-		IOLog("Address of input is above 256 MB!");
+
+	inputBuffer = (SInt32 *)IOMallocContiguousWithLimit(card->Specific.BufferSizeRec, physicalMask, &physicalAddressInput, &inputBufferDescriptor);
+	if (!inputBuffer) {
+	    IOLog("Envy24: couldn't allocate DMA input buffer below 256 MB\n");
+	    goto Done;
 	}
-	
-	
+
+	if ((physicalAddressOutput + card->Specific.BufferSize) > 0x10000000ULL ||
+	    (physicalAddressInput + card->Specific.BufferSizeRec) > 0x10000000ULL)
+	{
+		IOLog("Envy24: DMA buffer above 256 MB, refusing to start\n");
+		goto Done;
+	}
+
 	card->pci_dev->ioWrite32(MT_DMA_PB_ADDRESS, physicalAddressOutput, card->mtbase);
 	card->pci_dev->ioWrite32(MT_DMA_REC_ADDRESS, physicalAddressInput, card->mtbase);
 	card->pci_dev->ioWrite8(MT_SAMPLERATE, 8, card->mtbase); // initialize to 44100 Hz
@@ -245,13 +230,15 @@ void Envy24AudioEngine::free()
         interruptEventSource = NULL;
     }
     
-    if (outputBuffer) {
-        IOFreeContiguous(outputBuffer, card->Specific.BufferSize);
+    if (outputBufferDescriptor) {
+        outputBufferDescriptor->release();
+        outputBufferDescriptor = NULL;
         outputBuffer = NULL;
     }
     
-    if (inputBuffer) {
-		IOFreeContiguous(inputBuffer, card->Specific.BufferSizeRec);
+    if (inputBufferDescriptor) {
+        inputBufferDescriptor->release();
+        inputBufferDescriptor = NULL;
         inputBuffer = NULL;
     }
     
@@ -528,7 +515,8 @@ UInt32 Envy24AudioEngine::lookUpFrequencyBits(UInt32 Frequency,
 
 void * Envy24AudioEngine::IOMallocContiguousWithLimit(vm_size_t size,
 													  mach_vm_address_t physicalMask,
-						                              IOPhysicalAddress * physicalAddress)
+						                              IOPhysicalAddress * physicalAddress,
+						                              IOBufferMemoryDescriptor ** descriptor)
 {
 	 mach_vm_address_t   address = 0;
  
@@ -550,7 +538,8 @@ void * Envy24AudioEngine::IOMallocContiguousWithLimit(vm_size_t size,
 	 
 	     address          = (mach_vm_address_t) bmd->getBytesNoCopy();
 		 *physicalAddress = bmd->getPhysicalAddress();
-		 IOLog("phys = %lx, virt = %lx\n", bmd->getPhysicalAddress(), address);
+		 *descriptor      = bmd;
+		 IOLog("phys = %llx, virt = %llx\n", (unsigned long long) *physicalAddress, (unsigned long long) address);
 	 }
 	 
      return (void *) address;
