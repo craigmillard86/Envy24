@@ -2,6 +2,7 @@
 //
 //   devtest play [rate]          tone on output 1, then 2, 3, 4 (n beeps on output n)
 //   devtest record [secs] [rate] per-channel peak level of inputs 1-4, once a second
+//   devtest rate [hz]            show or set the device's nominal sample rate
 //
 // Build: swiftc -O tools/devtest.swift -o build/devtest
 
@@ -19,6 +20,34 @@ func fail(_ msg: String) -> Never {
 
 func check(_ status: OSStatus, _ what: String) {
     if status != noErr { fail("\(what) failed: \(status)") }
+}
+
+func deviceID(named name: String) -> AudioObjectID {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+                                          mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var uid: CFString = deviceUID(named: name)
+    var id = AudioObjectID(0)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    check(AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr,
+                                     UInt32(MemoryLayout<CFString>.size), &uid, &size, &id), "device ID")
+    return id
+}
+
+func nominalRate(set newRate: Double?) {
+    let id = deviceID(named: deviceName)
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                          mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var rate = Float64(0)
+    var size = UInt32(MemoryLayout<Float64>.size)
+    if var r = newRate {
+        check(AudioObjectSetPropertyData(id, &addr, 0, nil, size, &r), "set sample rate")
+        let end = Date().addingTimeInterval(1)
+        while Date() < end { CFRunLoopRunInMode(.defaultMode, 0.05, false) }
+    }
+    check(AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate), "get sample rate")
+    print("\(deviceName) nominal sample rate: \(Int(rate)) Hz")
 }
 
 func deviceUID(named name: String) -> CFString {
@@ -158,13 +187,20 @@ func record(seconds: Int, rate: Double) {
     print("Recording \(seconds) s at \(Int(rate)) Hz, peak per input in dBFS")
     print("  sec   in1     in2     in3     in4   frames")
     check(AudioQueueStart(queue!, nil), "AudioQueueStart")
+    var total = 0
+    var start: Date? = nil
     for s in 1...seconds {
         let end = Date().addingTimeInterval(1)
         while Date() < end { CFRunLoopRunInMode(.defaultMode, 0.05, false) }
         let db = meter.peak.map { $0 > 0 ? String(format: "%6.1f", 20 * log10($0)) : "  -inf" }
         print(String(format: "  %3d ", s) + db.joined(separator: "  ") + "  \(meter.frames)")
+        // measure from the end of the first second, once the queue is in steady state
+        if start == nil { start = Date() } else { total += meter.frames }
         meter.peak = [Float](repeating: 0, count: Int(channels))
         meter.frames = 0
+    }
+    if let start = start, seconds > 1 {
+        print(String(format: "  measured rate: %.0f frames/s", Double(total) / Date().timeIntervalSince(start)))
     }
     AudioQueueStop(queue!, true)
     AudioQueueDispose(queue!, true)
@@ -178,6 +214,8 @@ case "play":
     play(rate: args.count > 2 ? Double(args[2])! : 44100)
 case "record":
     record(seconds: args.count > 2 ? Int(args[2])! : 10, rate: args.count > 3 ? Double(args[3])! : 44100)
+case "rate":
+    nominalRate(set: args.count > 2 ? Double(args[2])! : nil)
 default:
-    fail("usage: devtest play [rate] | devtest record [secs] [rate]")
+    fail("usage: devtest play [rate] | devtest record [secs] [rate] | devtest rate [hz]")
 }

@@ -387,3 +387,20 @@ These are the devices most likely to be affected by VT-d on this machine.
   44100 Hz**. macOS made it the default input automatically.
 - `say -a Envy24 ...`: engine goes to state 1 (running) with one client; the device moves to its
   active power state.
+
+### Test 4 (2026-10-26): channels and rates
+
+Test tool: `tools/devtest.swift` (`build/devtest`; plays or records the Envy24 device through an
+AudioQueue, and sets its nominal rate the same way Audio MIDI Setup does).
+
+| Test | Result |
+|---|---|
+| Speech via `say -a Envy24` | heard clean on outputs 1/2 (user) |
+| `devtest play`: n beeps on output n | **outputs 1-4 correct**, each on its own output (user) |
+| Inputs 1/2 with a source | working (user) |
+| Inputs 3/4, idle | live noise floor about -83 dBFS (codec B ADC running), not digital zero |
+| Inputs 3/4 with a source | **not yet tested** |
+| 44.1 kHz capture rate | 44116 frames/s measured (+0.04%) |
+| 48 kHz | device rate change works; driver writes rate code 0 (48 kHz); 47731 frames/s measured, within one 4096-frame buffer over 9 s |
+
+DFS stays clear at both rates, as expected for rates up to 48 kHz.
