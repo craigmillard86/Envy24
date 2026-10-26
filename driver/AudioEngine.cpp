@@ -197,10 +197,19 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
 
     setNumSampleFramesPerBuffer(numSampleFrames);
 	
+    for (UInt32 i = 0; i < DMA_PLAY_SLOTS; i++)
+        playSlot[i] = (UInt8) i;
+    for (UInt32 i = 0; i < DMA_REC_SLOTS; i++)
+        recSlot[i] = (UInt8) i;
+
     if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
     {
-        // two AK4524 codecs on PSDOUT0/1 and PSDIN0/1; S/PDIF not enabled yet
-        playChannels = 4;
+        // outputs 1-4: AK4524 A/B on PSDOUT0/1 (slots 0-3)
+        // outputs 5/6: S/PDIF (slots 8/9, CS8403 on a classic Delta 66)
+        // inputs 1-4: AK4524 A/B on PSDIN0/1; S/PDIF input is not enabled
+        playChannels = card->Specific.HasSPDIF ? 6 : 4; // no S/PDIF on rev E yet
+        playSlot[4] = 8;
+        playSlot[5] = 9;
         recChannels = 4;
     }
     else
@@ -502,6 +511,7 @@ IOReturn Envy24AudioEngine::performFormatChange(IOAudioStream *audioStream, cons
 	if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
 	{
 		Delta66_set_rate_val(card, currentSampleRate);
+		Delta66_spdif_setup_rate(card, currentSampleRate);
 	}
 
 	/*UInt32 SPDIFBits = lookUpFrequencyBits(currentSampleRate, SPDIF_Frequencies, SPDIF_FrequencyBits, SPDIF_FREQUENCIES, 1000);

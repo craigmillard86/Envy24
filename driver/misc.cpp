@@ -1352,6 +1352,7 @@ int card_init(struct CardData *card)
         // ALSA leaves the routing at its reset value: every PSDOUT plays its
         // own DMA channels, and capture is not looped back.
         dev->ioWrite16(0x30, 0x0000, card->mtbase);
+        dev->ioWrite16(0x32, 0x0000, card->mtbase); // S/PDIF out plays DMA slots 8/9
         dev->ioWrite32(0x34, 0x00000000, card->mtbase);
     }
     else

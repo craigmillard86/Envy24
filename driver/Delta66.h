@@ -6,6 +6,10 @@ void Delta66_ak4524_lock(struct CardData *card, int chip);
 void Delta66_ak4524_unlock(struct CardData *card, int chip);
 void Delta66_set_rate_val(struct CardData *card, unsigned int rate);
 void CreateParmsForDelta66(struct CardData *card);
+void Delta66_spdif_setup_rate(struct CardData *card, unsigned int rate);
+
+// CS8403 status byte default, ALSA ice1712.c: consumer, no emphasis, PCM
+#define DELTA66_CS8403_DEFAULT  (0x01 | 0x10 | 0x20)
 
 
 // GPIO bits, from ALSA sound/pci/ice1712/delta.h

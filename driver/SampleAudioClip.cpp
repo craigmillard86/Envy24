@@ -27,8 +27,8 @@ IOReturn Envy24AudioEngine::clipOutputSamples(const void *mixBuf, void *sampleBu
     UInt32 frame, ch;
 
     // sampleBuf is the Core Audio shadow buffer and is not used: samples go straight
-    // into the DMA buffer, whose frames are always DMA_PLAY_SLOTS wide. Core Audio
-    // channel n is DMA slot n, so the first two codecs get channels 1-4.
+    // into the DMA buffer, whose frames are always DMA_PLAY_SLOTS wide. playSlot[]
+    // maps each Core Audio channel to its DMA slot.
     for (frame = firstSampleFrame; frame < firstSampleFrame + numSampleFrames; frame++) {
         const float *in = &floatMixBuf[frame * channels];
         SInt32 *out = &outputBuffer[frame * DMA_PLAY_SLOTS];
@@ -50,7 +50,7 @@ IOReturn Envy24AudioEngine::clipOutputSamples(const void *mixBuf, void *sampleBu
                 value = (SInt32) (inSample * 8388608.0f);
 
             // 24 significant bits at the top of the 32-bit slot
-            out[ch] = (SInt32) ((UInt32) value << 8);
+            out[playSlot[ch]] = (SInt32) ((UInt32) value << 8);
         }
     }
 
@@ -98,7 +98,7 @@ IOReturn Envy24AudioEngine::convertInputSamples(const void *sampleBuf, void *des
 
         for (ch = 0; ch < channels; ch++) {
             // 24 significant bits at the top of the slot; scale the full 32-bit value
-            *floatDestBuf++ = (float) in[ch] * (1.0f / 2147483648.0f);
+            *floatDestBuf++ = (float) in[recSlot[ch]] * (1.0f / 2147483648.0f);
         }
     }
 

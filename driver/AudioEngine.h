@@ -61,6 +61,8 @@ private:
 	UInt32							numSampleFrames;
 	UInt32							playChannels;
 	UInt32							recChannels;
+	UInt8							playSlot[DMA_PLAY_SLOTS]; // Core Audio channel -> DMA slot
+	UInt8							recSlot[DMA_REC_SLOTS];
 	SInt32							*outputShadow;
 	SInt32							*inputShadow;
 	UInt32							outputShadowSize;

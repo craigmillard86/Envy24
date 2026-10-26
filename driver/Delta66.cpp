@@ -113,13 +113,37 @@ void Delta66_set_rate_val(struct CardData *card, unsigned int rate)
 }
 
 
+// ALSA delta_setup_spdif(): rate bits in the CS8403 status byte. Consumer mode
+// only has codes for 32, 44.1 and 48 kHz; anything else goes out as 44.1 (0x00),
+// exactly as ALSA does. The byte is clocked out by spdif_write() (misc.cpp),
+// which matches snd_ice1712_delta_cs8403_spdif_write() bit for bit.
+void Delta66_spdif_setup_rate(struct CardData *card, unsigned int rate)
+{
+	unsigned char bits = DELTA66_CS8403_DEFAULT;
+
+	if (Delta66_IsRevE(card))
+		return;
+
+	if (bits & 0x01) // consumer
+		bits &= ~0x06;
+	switch (rate) {
+	case 32000: bits |= (bits & 0x01) ? 0x04 : 0x00; break;
+	case 44100: bits |= (bits & 0x01) ? 0x00 : 0x10; break;
+	case 48000: bits |= (bits & 0x01) ? 0x02 : 0x08; break;
+	default:    bits |= (bits & 0x01) ? 0x00 : 0x18; break;
+	}
+
+	spdif_write(card, bits);
+}
+
+
 int Delta66_Init(struct CardData *card)
 {
 	unsigned char tmp;
 
 	card->akm_type = AKM4524;
 	card->Specific.NumChannels = 4;
-	card->Specific.HasSPDIF = false; // digital I/O is not enabled in this pass
+	card->Specific.HasSPDIF = !Delta66_IsRevE(card); // S/PDIF out on the classic board only
 
 	/* ALSA snd_ice1712_delta_init(): initialize the SPI clock to high.
 	   On a classic Delta 66 this pin is the S/PDIF input status (an input). */
@@ -151,6 +175,11 @@ int Delta66_Init(struct CardData *card)
 
 	// The engine starts at 44.1 kHz; clear DFS if the EEPROM state left it set.
 	Delta66_set_rate_val(card, 44100);
+
+	// ALSA snd_ice1712_delta_init(): send the default status byte to the CS8403
+	// (rev E has a CS8427 instead, which is not set up yet)
+	if (!Delta66_IsRevE(card))
+		Delta66_spdif_setup_rate(card, 44100);
 
 	IOLog("Envy24: Delta 66%s initialized, GPIO dir %02x mask %02x data %02x\n",
 	      Delta66_IsRevE(card) ? " rev E" : "",
