@@ -1,6 +1,6 @@
 // Channel test for the Envy24 device.
 //
-//   devtest play [rate]          tone on output 1, then 2, 3, 4 (n beeps on output n)
+//   devtest play [rate]          n beeps on output n, for every output of the device
 //   devtest record [secs] [rate] per-channel peak level of inputs 1-4, once a second
 //   devtest rate [hz]            show or set the device's nominal sample rate
 //
@@ -11,7 +11,7 @@ import CoreAudio
 import Foundation
 
 let deviceNames = ["M-Audio Delta 66", "Envy24"]
-let channels: UInt32 = 4
+var channels: UInt32 = 4
 
 func fail(_ msg: String) -> Never {
     FileHandle.standardError.write((msg + "\n").data(using: .utf8)!)
@@ -80,6 +80,20 @@ func deviceUID() -> CFString {
     fail("no audio device named \(deviceNames.joined(separator: " or "))")
 }
 
+func outputChannelCount() -> UInt32 {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                          mScope: kAudioObjectPropertyScopeOutput,
+                                          mElement: kAudioObjectPropertyElementMain)
+    let id = deviceID()
+    var size: UInt32 = 0
+    check(AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size), "stream configuration size")
+    let list = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
+    defer { list.deallocate() }
+    check(AudioObjectGetPropertyData(id, &addr, 0, nil, &size, list), "stream configuration")
+    let buffers = UnsafeMutableAudioBufferListPointer(list.assumingMemoryBound(to: AudioBufferList.self))
+    return buffers.reduce(0) { $0 + $1.mNumberChannels }
+}
+
 func format(rate: Double) -> AudioStreamBasicDescription {
     AudioStreamBasicDescription(mSampleRate: rate,
                                 mFormatID: kAudioFormatLinearPCM,
@@ -116,6 +130,7 @@ final class Player {
 }
 
 func play(rate: Double) {
+    channels = outputChannelCount()
     var fmt = format(rate: rate)
     let player = Player(rate: rate)
     var queue: AudioQueueRef?
@@ -140,7 +155,7 @@ func play(rate: Double) {
         AudioQueueEnqueueBuffer(queue!, buf!, 0, nil)
     }
 
-    print("Playing at \(Int(rate)) Hz: n beeps on output n, 1 to 4")
+    print("Playing at \(Int(rate)) Hz: n beeps on output n, 1 to \(channels)")
     check(AudioQueueStart(queue!, nil), "AudioQueueStart")
     var announced = -1
     while player.frame < player.totalFrames + Int(rate) {
