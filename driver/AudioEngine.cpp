@@ -359,9 +359,11 @@ IOAudioStream *Envy24AudioEngine::createNewAudioStream(IOAudioStreamDirection di
 
 			for (int i = 0; i < FREQUENCIES; i++)
 			{
-				// first pass for the Delta 66: 44.1 and 48 kHz only
+				// Delta 66: 44.1, 48, 88.2 and 96 kHz. Above 48 kHz Delta66_set_rate_val
+				// sets DFS (double speed) on the AK4524s, as ALSA does.
 				if ((card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E) &&
-				    Frequencies[i] != 44100 && Frequencies[i] != 48000)
+				    Frequencies[i] != 44100 && Frequencies[i] != 48000 &&
+				    Frequencies[i] != 88200 && Frequencies[i] != 96000)
 					continue;
 
 				rate.whole = Frequencies[i];
