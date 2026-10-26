@@ -4,6 +4,7 @@
 
 #include <IOKit/audio/IOAudioControl.h>
 #include <IOKit/audio/IOAudioLevelControl.h>
+#include <IOKit/audio/IOAudioSelectorControl.h>
 #include <IOKit/audio/IOAudioToggleControl.h>
 #include <IOKit/audio/IOAudioDefines.h>
 
@@ -12,6 +13,7 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include "misc.h"
 #include "regs.h"
+#include "Delta66.h"
 
 
 #define super IOAudioDevice
@@ -187,6 +189,23 @@ bool Envy24AudioDevice::createAudioEngine()
         p = p->Next;
     }
     
+    // Classic Delta 66: choose between the card's own clock and the S/PDIF input's
+    if (card->SubType == MAUDIO_DELTA66 && card->Specific.HasSPDIF)
+    {
+        IOAudioSelectorControl *clock = IOAudioSelectorControl::create(0, kIOAudioControlChannelIDAll,
+                                                                       "Clock Source", 100,
+                                                                       kIOAudioSelectorControlSubTypeClockSource,
+                                                                       kIOAudioControlUsageInput);
+        if (!clock) {
+            IOLog("Failed to create clock source control!\n");
+            goto Done;
+        }
+        clock->addAvailableSelection(0, "Internal");
+        clock->addAvailableSelection(1, "S/PDIF");
+        clock->setValueChangeHandler((IOAudioControl::IntValueChangeHandler)clockSourceChangeHandler, this);
+        audioEngine->addDefaultAudioControl(clock);
+        clock->release();
+    }
 
     // Active the audio engine - this will cause the audio engine to have start() and initHardware() called on it
     // After this function returns, that audio engine should be ready to begin vending audio services to the system
@@ -205,6 +224,32 @@ Done:
     }
 
     return result;
+}
+
+// ALSA snd_ice1712_pro_internal_clock_put(): selecting S/PDIF sets MT_SPDIF_MASTER and
+// tells the AK4524s there is no rate hint (set_rate_val(0)); selecting Internal
+// rewrites the rate register without the master bit, as set_pro_rate() does.
+IOReturn Envy24AudioDevice::clockSourceChangeHandler(IOService *target, IOAudioControl *control, SInt32 oldValue, SInt32 newValue)
+{
+    Envy24AudioDevice *dev = (Envy24AudioDevice *)target;
+    struct CardData *card = dev ? dev->card : NULL;
+
+    if (!card || (newValue != 0 && newValue != 1))
+        return kIOReturnBadArgument;
+
+    UInt8 rate = card->pci_dev->ioRead8(MT_SAMPLERATE, card->mtbase);
+    card->Specific.SpdifMaster = (newValue == 1);
+    if (newValue == 1)
+    {
+        card->pci_dev->ioWrite8(MT_SAMPLERATE, rate | MT_SPDIF_MASTER, card->mtbase);
+        Delta66_set_rate_val(card, 0);
+    }
+    else
+    {
+        card->pci_dev->ioWrite8(MT_SAMPLERATE, rate & ~MT_SPDIF_MASTER, card->mtbase);
+    }
+    IOLog("Envy24: clock source %s\n", newValue ? "S/PDIF" : "internal");
+    return kIOReturnSuccess;
 }
 
 IOReturn Envy24AudioDevice::volumeChangeHandler(IOService *target, IOAudioControl *volumeControl, SInt32 oldValue, SInt32 newValue)

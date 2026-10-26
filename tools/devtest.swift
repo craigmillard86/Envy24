@@ -80,9 +80,9 @@ func deviceUID() -> CFString {
     fail("no audio device named \(deviceNames.joined(separator: " or "))")
 }
 
-func outputChannelCount() -> UInt32 {
+func channelCount(scope: AudioObjectPropertyScope) -> UInt32 {
     var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
-                                          mScope: kAudioObjectPropertyScopeOutput,
+                                          mScope: scope,
                                           mElement: kAudioObjectPropertyElementMain)
     let id = deviceID()
     var size: UInt32 = 0
@@ -130,7 +130,7 @@ final class Player {
 }
 
 func play(rate: Double) {
-    channels = outputChannelCount()
+    channels = channelCount(scope: kAudioObjectPropertyScopeOutput)
     var fmt = format(rate: rate)
     let player = Player(rate: rate)
     var queue: AudioQueueRef?
@@ -175,6 +175,7 @@ final class Meter {
 }
 
 func record(seconds: Int, rate: Double) {
+    channels = channelCount(scope: kAudioObjectPropertyScopeInput)
     var fmt = format(rate: rate)
     let meter = Meter()
     var queue: AudioQueueRef?
@@ -200,8 +201,8 @@ func record(seconds: Int, rate: Double) {
         AudioQueueEnqueueBuffer(queue!, buf!, 0, nil)
     }
 
-    print("Recording \(seconds) s at \(Int(rate)) Hz, peak per input in dBFS")
-    print("  sec   in1     in2     in3     in4   frames")
+    print("Recording \(seconds) s at \(Int(rate)) Hz, peak per input in dBFS (inputs 5/6 = S/PDIF)")
+    print("  sec " + (1...Int(channels)).map { "  in\($0)  " }.joined(separator: " ") + "  frames")
     check(AudioQueueStart(queue!, nil), "AudioQueueStart")
     var total = 0
     var start: Date? = nil

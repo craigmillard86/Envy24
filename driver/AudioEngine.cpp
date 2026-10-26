@@ -206,11 +206,14 @@ bool Envy24AudioEngine::initHardware(IOService *provider)
     {
         // outputs 1-4: AK4524 A/B on PSDOUT0/1 (slots 0-3)
         // outputs 5/6: S/PDIF (slots 8/9, CS8403 on a classic Delta 66)
-        // inputs 1-4: AK4524 A/B on PSDIN0/1; S/PDIF input is not enabled
+        // inputs 1-4: AK4524 A/B on PSDIN0/1
+        // inputs 5/6: S/PDIF receiver (CS8414 on a classic Delta 66), slots 8/9
         playChannels = card->Specific.HasSPDIF ? 6 : 4; // no S/PDIF on rev E yet
         playSlot[4] = 8;
         playSlot[5] = 9;
-        recChannels = 4;
+        recChannels = card->Specific.HasSPDIF ? 6 : 4;
+        recSlot[4] = 8;
+        recSlot[5] = 9;
     }
     else
     {
@@ -504,13 +507,16 @@ IOReturn Envy24AudioEngine::performFormatChange(IOAudioStream *audioStream, cons
 	currentSampleRate = newSampleRate->whole;
 	
 	UInt32 FreqBits = lookUpFrequencyBits(currentSampleRate, Frequencies, FrequencyBits, FREQUENCIES, 0x08);
+	if (card->Specific.SpdifMaster)
+		FreqBits |= MT_SPDIF_MASTER; // rate bits are ignored while S/PDIF is master
 	card->pci_dev->ioWrite8(MT_SAMPLERATE, (UInt8) FreqBits, card->mtbase);
 	IOLog("Freq = %x\n", FreqBits);
 
 	// ALSA calls the codec set_rate_val after programming the rate register
 	if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
 	{
-		Delta66_set_rate_val(card, currentSampleRate);
+		// ALSA passes rate 0 (no DFS change) when S/PDIF is the master clock
+		Delta66_set_rate_val(card, card->Specific.SpdifMaster ? 0 : currentSampleRate);
 		Delta66_spdif_setup_rate(card, currentSampleRate);
 	}
 

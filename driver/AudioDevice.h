@@ -35,6 +35,7 @@ class Envy24AudioDevice : public IOAudioDevice
 	void dumpRegisters();
     
 	static IOReturn volumeChangeHandler(IOService *target, IOAudioControl *volumeControl, SInt32 oldValue, SInt32 newValue);
+    static IOReturn clockSourceChangeHandler(IOService *target, IOAudioControl *control, SInt32 oldValue, SInt32 newValue);
     virtual IOReturn volumeChanged(IOAudioControl *volumeControl, SInt32 oldValue, SInt32 newValue);
     
     static IOReturn outputMuteChangeHandler(IOService *target, IOAudioControl *muteControl, SInt32 oldValue, SInt32 newValue);

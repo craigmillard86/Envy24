@@ -43,6 +43,7 @@ struct CardSpecific
 {
 	UInt32 NumChannels;
 	bool HasSPDIF;
+	bool SpdifMaster; // MT_SPDIF_MASTER: clock follows the S/PDIF input
 	UInt32 BufferSize;
 	UInt32 BufferSizeRec;
 };

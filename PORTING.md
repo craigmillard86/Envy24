@@ -437,3 +437,14 @@ handling with codec reset was already in `Delta66_set_rate_val`.
 - Rev E keeps 4 outputs until its CS8427 is set up.
 
 `devtest play` now covers every output of the device (n beeps on output n, up to 6).
+
+## 6. S/PDIF input and clock source (classic Delta 66)
+
+- Capture DMA slots 8/9 carry the S/PDIF receiver (CS8414, needs no setup), exposed as
+  inputs 5/6, so the classic board is now 6 in / 6 out. Rev E stays 4 in (CS8427 not set up).
+- "Clock Source" selector (Internal / S/PDIF), ALSA `snd_ice1712_pro_internal_clock_put()`:
+  S/PDIF sets `MT_SPDIF_MASTER` (0x10 in MT_SAMPLERATE) and calls `set_rate_val(0)` (no DFS
+  change); Internal rewrites the rate register without the bit. `performFormatChange` keeps the
+  bit while S/PDIF is master. Rate-bit/DFS follow the incoming signal's rate, so the
+  sample rate set in Core Audio must match the source.
+- Status: built, **untested on hardware** (needs a live S/PDIF source).
