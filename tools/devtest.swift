@@ -10,7 +10,7 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
-let deviceName = "Envy24"
+let deviceNames = ["M-Audio Delta 66", "Envy24"]
 let channels: UInt32 = 4
 
 func fail(_ msg: String) -> Never {
@@ -22,11 +22,11 @@ func check(_ status: OSStatus, _ what: String) {
     if status != noErr { fail("\(what) failed: \(status)") }
 }
 
-func deviceID(named name: String) -> AudioObjectID {
+func deviceID() -> AudioObjectID {
     var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
                                           mScope: kAudioObjectPropertyScopeGlobal,
                                           mElement: kAudioObjectPropertyElementMain)
-    var uid: CFString = deviceUID(named: name)
+    var uid: CFString = deviceUID()
     var id = AudioObjectID(0)
     var size = UInt32(MemoryLayout<AudioObjectID>.size)
     check(AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr,
@@ -35,7 +35,7 @@ func deviceID(named name: String) -> AudioObjectID {
 }
 
 func nominalRate(set newRate: Double?) {
-    let id = deviceID(named: deviceName)
+    let id = deviceID()
     var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
                                           mScope: kAudioObjectPropertyScopeGlobal,
                                           mElement: kAudioObjectPropertyElementMain)
@@ -47,10 +47,11 @@ func nominalRate(set newRate: Double?) {
         while Date() < end { CFRunLoopRunInMode(.defaultMode, 0.05, false) }
     }
     check(AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate), "get sample rate")
-    print("\(deviceName) nominal sample rate: \(Int(rate)) Hz")
+    print("nominal sample rate: \(Int(rate)) Hz")
 }
 
-func deviceUID(named name: String) -> CFString {
+// The driver names the device after the board; older builds called it "Envy24".
+func deviceUID() -> CFString {
     var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                           mScope: kAudioObjectPropertyScopeGlobal,
                                           mElement: kAudioObjectPropertyElementMain)
@@ -66,7 +67,7 @@ func deviceUID(named name: String) -> CFString {
         var cfName: Unmanaged<CFString>?
         var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         guard AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName) == noErr,
-              let devName = cfName?.takeRetainedValue() as String?, devName == name else { continue }
+              let devName = cfName?.takeRetainedValue() as String?, deviceNames.contains(devName) else { continue }
 
         var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
                                                  mScope: kAudioObjectPropertyScopeGlobal,
@@ -76,7 +77,7 @@ func deviceUID(named name: String) -> CFString {
         check(AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, &uid), "device UID")
         return uid!.takeRetainedValue()
     }
-    fail("no audio device named \(name)")
+    fail("no audio device named \(deviceNames.joined(separator: " or "))")
 }
 
 func format(rate: Double) -> AudioStreamBasicDescription {
@@ -128,7 +129,7 @@ func play(rate: Double) {
         AudioQueueEnqueueBuffer(q, buf, 0, nil)
     }, ctx, nil, nil, 0, &queue), "AudioQueueNewOutput")
 
-    var uid: CFString? = deviceUID(named: deviceName)
+    var uid: CFString? = deviceUID()
     check(AudioQueueSetProperty(queue!, kAudioQueueProperty_CurrentDevice, &uid, UInt32(MemoryLayout<CFString?>.size)), "set device")
 
     for _ in 0..<3 {
@@ -175,7 +176,7 @@ func record(seconds: Int, rate: Double) {
         AudioQueueEnqueueBuffer(q, buf, 0, nil)
     }, ctx, nil, nil, 0, &queue), "AudioQueueNewInput")
 
-    var uid: CFString? = deviceUID(named: deviceName)
+    var uid: CFString? = deviceUID()
     check(AudioQueueSetProperty(queue!, kAudioQueueProperty_CurrentDevice, &uid, UInt32(MemoryLayout<CFString?>.size)), "set device")
 
     for _ in 0..<3 {

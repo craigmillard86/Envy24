@@ -48,9 +48,6 @@ bool Envy24AudioDevice::initHardware(IOService *provider)
 	card->pci_dev->setIOEnable(true);
     card->pci_dev->setBusMasterEnable(true);
     
-    setDeviceName("Envy24");
-    setDeviceShortName("Envy24");
-    setManufacturerName("VIA/ICE");
 
     // Config a map for the PCI config base registers
     // We need to keep this map around until we're done accessing the registers
@@ -72,6 +69,20 @@ bool Envy24AudioDevice::initHardware(IOService *provider)
 	    IOLog("AllocDriverData() failed!\n");
 		goto Done;
 	}
+
+    // The board is only known once card_init() has read the EEPROM
+    if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
+    {
+        setDeviceName("M-Audio Delta 66");
+        setDeviceShortName("Delta 66");
+        setManufacturerName("M-Audio");
+    }
+    else
+    {
+        setDeviceName("Envy24");
+        setDeviceShortName("Envy24");
+        setManufacturerName("VIA/ICE");
+    }
 
     if (!createAudioEngine()) {
         goto Done;
