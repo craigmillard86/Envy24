@@ -1264,7 +1264,7 @@ int card_init(struct CardData *card)
     else if (card->SubType == MAUDIO_DELTA66 || card->SubType == MAUDIO_DELTA66E)
     {
         Delta66_Init(card);
-        CreateParmsForDelta4466(card);
+        CreateParmsForDelta66(card);
     }
     else if (card->SubType == MAUDIO_DELTA44)
     {

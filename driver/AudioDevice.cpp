@@ -235,6 +235,13 @@ IOReturn Envy24AudioDevice::volumeChanged(IOAudioControl *volumeControl, SInt32 
                 unsigned char val = newValue;
                 
                 //IOLog("write reg %d, val %d\n", p->reg, val);
+                if (p->conversion == PARM_AK_DATT || p->conversion == PARM_AK_ADC)
+                {
+                    // 0.5 dB steps, 0 = mute (ALSA ak4xxx-adda.c)
+                    val = ak4524_level_register(newValue, p->conversion == PARM_AK_ADC);
+                }
+                else
+                {
                 if (p->reverse)
                 {
                     val = p->MaxValue - val;
@@ -247,6 +254,7 @@ IOReturn Envy24AudioDevice::volumeChanged(IOAudioControl *volumeControl, SInt32 
                     {
                         val = 0;
                     }
+                }
                 }
                 akm4xxx_write(card, &(card->codec[p->codec]), p->reg, val);
                 break;

@@ -4,6 +4,7 @@
 #include "ak_codec.h"
 #include "Delta66.h"
 #include <IOKit/IOLib.h>
+#include <IOKit/audio/IOAudioDefines.h>
 
 // Board support for the M-Audio Delta 66 and Delta 66 rev E.
 // Ported from ALSA sound/pci/ice1712/delta.c; see PORTING.md for the pin map.
@@ -140,6 +141,12 @@ int Delta66_Init(struct CardData *card)
 		Delta66_ak4524_lock(card, chip);
 		Init_akm4xxx(card, &card->codec[chip]);
 		Delta66_ak4524_unlock(card, chip);
+
+		// start every level at 0 dB, matching the controls' initial value (127)
+		Delta66_codec_write(card, chip, 0x04, ak4524_level_register(127, true));
+		Delta66_codec_write(card, chip, 0x05, ak4524_level_register(127, true));
+		Delta66_codec_write(card, chip, 0x06, ak4524_level_register(127, false));
+		Delta66_codec_write(card, chip, 0x07, ak4524_level_register(127, false));
 	}
 
 	// The engine starts at 44.1 kHz; clear DFS if the EEPROM state left it set.
@@ -150,4 +157,56 @@ int Delta66_Init(struct CardData *card)
 	      ReadCCI(card, CCI_GPIO_DIR), ReadCCI(card, CCI_GPIO_MASK), ReadCCI(card, CCI_GPIO_DATA));
 
 	return 0;
+}
+
+
+// One level control per channel, in ALSA's units (ak4xxx-adda.c): 0.5 dB per step,
+// 0 = mute. DAC (regs 6/7) 0..127 = -63.5..0 dB; ADC (regs 4/5) 0..164 = -63.5..+18.5 dB.
+static struct Parm *Delta66_AddLevel(struct Parm *prev, UInt32 controlID, UInt32 channelID,
+                                     const char *name, UInt32 usage, int codec, unsigned char reg)
+{
+	struct Parm *p = new Parm;
+	bool adc = (usage == kIOAudioControlUsageInput);
+
+	if (!p)
+		return NULL;
+
+	p->InitialValue = 127;              // 0 dB
+	p->MinValue = 0;
+	p->MaxValue = adc ? 164 : 127;
+	p->MindB = -4161536;                // -63.5 dB in IOFixed
+	p->MaxdB = adc ? 1212416 : 0;       // +18.5 dB / 0 dB
+	p->ChannelID = channelID;
+	p->Name = name;
+	p->ControlID = controlID;
+	p->Usage = usage;
+	p->reg = reg;
+	p->reverse = false;
+	p->codec = codec;
+	p->conversion = adc ? PARM_AK_ADC : PARM_AK_DATT;
+	p->Next = NULL;
+
+	if (prev)
+		prev->Next = p;
+	return p;
+}
+
+
+void CreateParmsForDelta66(struct CardData *card)
+{
+	static const char *outNames[] = { "Output 1", "Output 2", "Output 3", "Output 4" };
+	static const char *inNames[] = { "Input 1", "Input 2", "Input 3", "Input 4" };
+	struct Parm *p = NULL;
+
+	card->ParmList = NULL;
+
+	// channel n is codec n / 2 (A or B), left (reg 6/4) or right (reg 7/5)
+	for (UInt32 ch = 0; ch < 4; ch++)
+	{
+		p = Delta66_AddLevel(p, ch, ch + 1, outNames[ch], kIOAudioControlUsageOutput, ch / 2, 0x06 + (ch & 1));
+		if (!card->ParmList)
+			card->ParmList = p;
+	}
+	for (UInt32 ch = 0; ch < 4; ch++)
+		p = Delta66_AddLevel(p, 4 + ch, ch + 1, inNames[ch], kIOAudioControlUsageInput, ch / 2, 0x04 + (ch & 1));
 }

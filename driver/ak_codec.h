@@ -40,6 +40,7 @@ struct snd_ak4xxx_private {
 
 void Init_akm4xxx(struct CardData *card, struct akm_codec *codec);
 void akm4xxx_write(struct CardData *card, struct akm_codec *codec, unsigned char addr, unsigned char data);
+unsigned char ak4524_level_register(int value, bool ipga);
 void akm4xxx_write_new(struct CardData *card, struct akm_codec *codec, unsigned char addr, unsigned char data);
 #endif
 

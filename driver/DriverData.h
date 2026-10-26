@@ -48,6 +48,13 @@ struct CardSpecific
 };
 
 
+enum ParmConversion
+{
+    PARM_RAW,       // control value is written as is
+    PARM_AK_DATT,   // AK4524 DAC: 0..127 in 0.5 dB steps, via the ALSA vol_cvt_datt table
+    PARM_AK_ADC     // AK4524 ADC: 0..127 as PARM_AK_DATT, 128..164 IPGA gain
+};
+
 struct Parm
 {
     SInt32 InitialValue;
@@ -62,6 +69,7 @@ struct Parm
     unsigned char reg; // register
     bool reverse;
     int codec;
+    int conversion = PARM_RAW; // how the control value becomes a register value
     struct Parm *Next;
 };
 

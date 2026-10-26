@@ -5,6 +5,7 @@ int Delta66_Init(struct CardData *card);
 void Delta66_ak4524_lock(struct CardData *card, int chip);
 void Delta66_ak4524_unlock(struct CardData *card, int chip);
 void Delta66_set_rate_val(struct CardData *card, unsigned int rate);
+void CreateParmsForDelta66(struct CardData *card);
 
 
 // GPIO bits, from ALSA sound/pci/ice1712/delta.h
