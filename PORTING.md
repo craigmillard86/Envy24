@@ -242,18 +242,14 @@ XNU exports (`IOMalloc` as an alias of `IOMalloc_external`).
 
 ## Open items
 
-- **Board revision** is still unknown until the first load. Look for
-  `M-Audio Delta 66 detected!` / `rev E detected!` and the `EEPROM ... GPIO ... dir` line.
-- **Untested on hardware.** Nothing from Phase 3 has run yet.
-- Volume controls: DAC regs 6/7 on the AK4524 are linear attenuation, but upstream presents them
-  as -49..0 dB linearly. ALSA uses a conversion table (`vol_cvt_datt`). Cosmetic for now.
-- Input gain: upstream writes IPGA 128..164 directly; ALSA adds 1 above 128. Check against the
-  AK4524 datasheet.
-- 88.2/96 kHz: `Delta66_set_rate_val` already handles DFS, but those rates aren't offered yet.
-- S/PDIF: CS8403 (classic) or CS8427 (rev E), and DMA slots 8-9.
-- `getPhysicalAddress()` is only correct while there's no IOMMU (VT-d is off here: `AppleVTD` has
-  0 instances). Enabling VT-d would need `IODMACommand`.
-- Device name is still "Envy24" in Audio MIDI Setup.
+See section 5 for S/PDIF out, 88.2/96 kHz, the volume scale and the device name.
+
+- S/PDIF input (CS8414 on the classic board): slots 8/9 of capture are not exposed. Recording a
+  digital source cleanly also needs the card clocked from the input (MT rate register bit 0x10).
+- Rev E support (CS8427) is written but untested; the card here is a classic Delta 66.
+- Sample rate is written even while DMA is running. ALSA skips the change in that case
+  (`snd_ice1712_set_pro_rate`).
+- OpenCore-only install would need a PCI-only kext + Core Audio HAL plug-in. Not planned.
 
 ## 4. Load and test (Phase 4)
 
@@ -404,3 +400,40 @@ AudioQueue, and sets its nominal rate the same way Audio MIDI Setup does).
 | 48 kHz | device rate change works; driver writes rate code 0 (48 kHz); 47731 frames/s measured, within one 4096-frame buffer over 9 s |
 
 DFS stays clear at both rates, as expected for rates up to 48 kHz.
+
+
+## 5. Second pass: name, levels, 88.2/96 kHz, S/PDIF out
+
+Each is a separate commit.
+
+**Device name** (`92ea915`). Set after `card_init()` has identified the board: "M-Audio Delta 66",
+short name "Delta 66", manufacturer "M-Audio". Core Audio's device UID comes from the engine
+class and PCI location, not the name, so existing settings should carry over.
+
+**Level controls** (`79aa831`). The AK4524 level registers are not linear in dB. Ported ALSA's
+`vol_cvt_datt` table and `put_ak_reg` (`ak4xxx-adda.c`) into `ak4524_level_register()`:
+
+| Control | Range | dB | Register |
+|---|---|---|---|
+| Output 1-4 (regs 6/7) | 0..127 | -63.5..0, 0.5 dB steps | `vol_cvt_datt[v]` |
+| Input 1-4 (regs 4/5) | 0..164 | -63.5..+18.5, 0.5 dB steps | `v < 128`: `vol_cvt_datt[v]`; else `v + 1` (IPGA) |
+
+0 is mute. All levels start at 127 (0 dB), and `Delta66_Init` writes the codecs to match.
+`Parm::conversion` defaults to `PARM_RAW`, so other boards are unchanged.
+
+**88.2 / 96 kHz** (`12afe67`). Rate codes 11 and 7 (ALSA `snd_ice1712_set_pro_rate`). DFS
+handling with codec reset was already in `Delta66_set_rate_val`.
+
+**S/PDIF output, classic Delta 66** (`602a3f8`).
+- Core Audio outputs 5/6 → DMA slots 8/9 (new `playSlot[]` map in the engine). The device now
+  has 6 outputs, 4 inputs.
+- CS8403 status byte: ALSA default `0x31` (consumer, no emphasis, PCM), sent at init.
+- On every rate change, ALSA `delta_setup_spdif`: consumer rate bits `0x02` = 48 kHz,
+  `0x04` = 32 kHz, `0x00` = 44.1 kHz *and everything else*. So at 88.2/96 kHz the stream is
+  sent with the 44.1 kHz code; receivers that trust the code over the actual clock may refuse it.
+  This is ALSA's behaviour too.
+- MT 0x32 (S/PDIF out route) written to 0, ALSA's default (PCM).
+- `spdif_write()` (upstream) is identical to `snd_ice1712_delta_cs8403_spdif_write()`.
+- Rev E keeps 4 outputs until its CS8427 is set up.
+
+`devtest play` now covers every output of the device (n beeps on output n, up to 6).
